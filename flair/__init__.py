@@ -1,5 +1,8 @@
 import os
+
 import torch
+
+torch.multiprocessing.set_sharing_strategy("forkserver")
 from pathlib import Path
 
 # global variable: cache_root
