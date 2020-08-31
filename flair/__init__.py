@@ -1,19 +1,16 @@
 import os
 
-import torch
-
-torch.multiprocessing.set_sharing_strategy("file_system")
 from pathlib import Path
 
 # global variable: cache_root
 cache_root = os.getenv('FLAIR_CACHE_ROOT', Path(Path.home(), ".flair"))
 
-# global variable: device
-device = None
-if torch.cuda.is_available():
-    device = torch.device("cuda:0")
-else:
-    device = torch.device("cpu")
+# # global variable: device
+# device = None
+# if torch.cuda.is_available():
+#     device = torch.device("cuda:0")
+# else:
+#     device = torch.device("cpu")
 
 # global variable: embedding_storage_mode
 embedding_storage_mode = "default"

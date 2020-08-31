@@ -1,11 +1,10 @@
+import logging
 from abc import abstractmethod
 from typing import Union, List, Dict
-from torch.nn import ParameterList, Parameter
 
 import torch
-import logging
+from torch.nn import ParameterList, Parameter
 
-import flair
 from flair.data import Sentence, Image
 
 log = logging.getLogger("flair")
@@ -14,13 +13,14 @@ log = logging.getLogger("flair")
 class Embeddings(torch.nn.Module):
     """Abstract base class for all embeddings. Every new type of embedding must implement these methods."""
 
-    def __init__(self):
+    def __init__(self, device=torch.device("cpu")):
         """Set some attributes that would otherwise result in errors. Overwrite these in your embedding class."""
         if not hasattr(self, "name"):
             self.name: str = "unnamed_embedding"
         if not hasattr(self, "static_embeddings"):
             # if the embeddings for a sentence are the same in each epoch, set this to True for improved efficiency
             self.static_embeddings = False
+        self.device = device
         super().__init__()
 
     @property
@@ -62,7 +62,8 @@ class Embeddings(torch.nn.Module):
         return sentences
 
     @abstractmethod
-    def _add_embeddings_internal(self, sentences: List[Sentence]) -> List[Sentence]:
+    def _add_embeddings_internal(self, sentences: List[Sentence]) -> List[
+        Sentence]:
         """Private method for adding embeddings to all words in a list of sentences."""
         pass
 
@@ -103,8 +104,7 @@ class ScalarMix(torch.nn.Module):
                 Parameter(
                     torch.tensor(
                         [initial_scalar_parameters[i]],
-                        dtype=torch.float,
-                        device=flair.device,
+                        dtype=torch.float
                     ),
                     requires_grad=trainable,
 
@@ -116,7 +116,6 @@ class ScalarMix(torch.nn.Module):
             torch.tensor(
                 [1.0],
                 dtype=torch.float,
-                device=flair.device,
             ), requires_grad=trainable
         )
 

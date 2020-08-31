@@ -1,18 +1,13 @@
 import warnings
-from pathlib import Path
-
-import torch.nn
-
 from abc import abstractmethod
-
+from pathlib import Path
 from typing import Union, List
 
+import torch.nn
 from torch.utils.data.dataset import Dataset
 
-import flair
 from flair import file_utils
-from flair.data import DataPoint, Sentence
-from flair.datasets import DataLoader
+from flair.data import DataPoint
 from flair.training_utils import Result
 
 
@@ -20,19 +15,26 @@ class Model(torch.nn.Module):
     """Abstract base class for all downstream task models in Flair, such as SequenceTagger and TextClassifier.
     Every new type of model must implement these methods."""
 
+    @property
+    def device(self):
+        """Returns the device for the current model. Every model should take care of this and should return the correct
+        device for model parameters. It should be implemented as a @property."""
+        raise NotImplementedError("The @property method 'device' has not been added to your Model."
+                                  "Please implement it so that the flair.Model is aware of the device where to store tensors.")
+
     @abstractmethod
     def forward_loss(
-        self, data_points: Union[List[DataPoint], DataPoint]
+            self, data_points: Union[List[DataPoint], DataPoint]
     ) -> torch.tensor:
         """Performs a forward pass and returns a loss tensor for backpropagation. Implement this to enable training."""
         pass
 
     @abstractmethod
     def evaluate(
-        self,
-        sentences: Union[List[DataPoint], Dataset],
-        out_path: Path = None,
-        embedding_storage_mode: str = "none",
+            self,
+            sentences: Union[List[DataPoint], Dataset],
+            out_path: Path = None,
+            embedding_storage_mode: str = "none",
     ) -> (Result, float):
         """Evaluates the model. Returns a Result object containing evaluation
         results and a loss value. Implement this to enable evaluation.
@@ -72,7 +74,7 @@ class Model(torch.nn.Module):
         torch.save(model_state, str(model_file), pickle_protocol=4)
 
     @classmethod
-    def load(cls, model: Union[str, Path]):
+    def load(cls, model: Union[str, Path], device=torch.device("cpu")):
         """
         Loads the model from the given file.
         :param model: the model file
@@ -90,7 +92,7 @@ class Model(torch.nn.Module):
         model = cls._init_model_with_state_dict(state)
 
         model.eval()
-        model.to(flair.device)
+        model.to(device)
 
         return model
 

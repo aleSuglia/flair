@@ -1,24 +1,25 @@
 import itertools
-import random
 import logging
+import random
 from collections import defaultdict
 from enum import Enum
+from functools import reduce
 from math import inf
 from pathlib import Path
 from typing import Union, List
 
+import torch
+from scipy.stats import pearsonr, spearmanr
+from sklearn.metrics import mean_squared_error, mean_absolute_error
 from torch.optim import Optimizer
 
 import flair
 from flair.data import Dictionary, Sentence
-from functools import reduce
-from sklearn.metrics import mean_squared_error, mean_absolute_error
-from scipy.stats import pearsonr, spearmanr
 
 
 class Result(object):
     def __init__(
-        self, main_score: float, log_header: str, log_line: str, detailed_results: str
+            self, main_score: float, log_header: str, log_line: str, detailed_results: str
     ):
         self.main_score: float = main_score
         self.log_header: str = log_header
@@ -516,8 +517,7 @@ def add_file_handler(log, output_file):
     return fh
 
 
-def store_embeddings(sentences: List[Sentence], storage_mode: str):
-
+def store_embeddings(sentences: List[Sentence], storage_mode: str, device):
     # if memory mode option 'none' delete everything
     if storage_mode == "none":
         for sentence in sentences:
@@ -538,7 +538,7 @@ def store_embeddings(sentences: List[Sentence], storage_mode: str):
 
     # memory management - option 1: send everything to CPU (pin to memory if we train on GPU)
     if storage_mode == "cpu":
-        pin_memory = False if str(flair.device) == "cpu" else True
+        pin_memory = False if device == "cpu" or device == torch.device("cpu") else True
         for sentence in sentences:
             sentence.to("cpu", pin_memory=pin_memory)
 

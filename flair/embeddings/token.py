@@ -1,23 +1,22 @@
 import hashlib
+import logging
+import os
+import re
 from abc import abstractmethod
-from pathlib import Path
-from typing import List, Union, Dict
 from collections import Counter
 from functools import lru_cache
+from pathlib import Path
+from typing import List, Union, Dict
 
+import gensim
+import numpy as np
 import torch
 from bpemb import BPEmb
 from transformers import XLNetTokenizer, T5Tokenizer, GPT2Tokenizer, AutoTokenizer, AutoConfig, AutoModel
 
 import flair
-import gensim
-import os
-import re
-import logging
-import numpy as np
-
 from flair.data import Sentence, Token, Corpus, Dictionary
-from flair.embeddings.base import Embeddings, ScalarMix
+from flair.embeddings.base import Embeddings
 from flair.file_utils import cached_path, open_inside_zip
 
 log = logging.getLogger("flair")
@@ -40,9 +39,9 @@ class TokenEmbeddings(Embeddings):
 class StackedEmbeddings(TokenEmbeddings):
     """A stack of embeddings, used if you need to combine several different embedding types."""
 
-    def __init__(self, embeddings: List[TokenEmbeddings]):
+    def __init__(self, embeddings: List[TokenEmbeddings], device=torch.device("cpu")):
         """The constructor takes a list of embeddings to be combined."""
-        super().__init__()
+        super().__init__(device=device)
 
         self.embeddings = embeddings
 
@@ -61,7 +60,7 @@ class StackedEmbeddings(TokenEmbeddings):
             self.__embedding_length += embedding.embedding_length
 
     def embed(
-        self, sentences: Union[Sentence, List[Sentence]], static_embeddings: bool = True
+            self, sentences: Union[Sentence, List[Sentence]], static_embeddings: bool = True
     ):
         # if only one sentence is passed, convert to list of sentence
         if type(sentences) is Sentence:
@@ -147,7 +146,7 @@ class WordEmbeddings(TokenEmbeddings):
             embeddings = cached_path(f"{hu_path}/en-fasttext-crawl-300d-1M", cache_dir=cache_dir)
 
         # FT-CRAWL embeddings
-        elif embeddings.lower() in["news", "en-news", "en"]:
+        elif embeddings.lower() in ["news", "en-news", "en"]:
             cached_path(f"{hu_path}/en-fasttext-news-300d-1M.vectors.npy", cache_dir=cache_dir)
             embeddings = cached_path(f"{hu_path}/en-fasttext-news-300d-1M", cache_dir=cache_dir)
 
@@ -164,7 +163,7 @@ class WordEmbeddings(TokenEmbeddings):
         # two-letter language code wiki embeddings
         elif len(embeddings.lower()) == 7 and embeddings.endswith("-wiki"):
             cached_path(f"{hu_path}/{embeddings[:2]}-wiki-fasttext-300d-1M.vectors.npy", cache_dir=cache_dir)
-            embeddings = cached_path(f"{hu_path}/{embeddings[:2]}-wiki-fasttext-300d-1M",  cache_dir=cache_dir)
+            embeddings = cached_path(f"{hu_path}/{embeddings[:2]}-wiki-fasttext-300d-1M", cache_dir=cache_dir)
 
         # two-letter language code crawl embeddings
         elif len(embeddings.lower()) == 8 and embeddings.endswith("-crawl"):
@@ -198,7 +197,7 @@ class WordEmbeddings(TokenEmbeddings):
         return self.__embedding_length
 
     @lru_cache(maxsize=10000, typed=False)
-    def get_cached_vec(self, word: str) -> torch.Tensor:
+    def get_cached_vec(self, word: str, device=torch.device) -> torch.Tensor:
         if word in self.precomputed_word_embeddings:
             word_embedding = self.precomputed_word_embeddings[word]
         elif word.lower() in self.precomputed_word_embeddings:
@@ -214,12 +213,11 @@ class WordEmbeddings(TokenEmbeddings):
         else:
             word_embedding = np.zeros(self.embedding_length, dtype="float")
 
-        word_embedding = torch.tensor(
-            word_embedding.tolist(), device=flair.device, dtype=torch.float
-        )
+        word_embedding = torch.tensor(word_embedding.tolist(), dtype=torch.float).to(device)
+
         return word_embedding
 
-    def _add_embeddings_internal(self, sentences: List[Sentence]) -> List[Sentence]:
+    def _add_embeddings_internal(self, sentences: List[Sentence], device=torch.device("cpu")) -> List[Sentence]:
 
         for i, sentence in enumerate(sentences):
 
@@ -230,7 +228,7 @@ class WordEmbeddings(TokenEmbeddings):
                 else:
                     word = token.get_tag(self.field).value
 
-                word_embedding = self.get_cached_vec(word=word)
+                word_embedding = self.get_cached_vec(word=word, device=device)
 
                 token.set_embedding(self.name, word_embedding)
 
@@ -246,14 +244,15 @@ class WordEmbeddings(TokenEmbeddings):
 
         return f"'{self.embeddings}'"
 
+
 class CharacterEmbeddings(TokenEmbeddings):
     """Character embeddings of words, as proposed in Lample et al., 2016."""
 
     def __init__(
-        self,
-        path_to_char_dict: str = None,
-        char_embedding_dim: int = 25,
-        hidden_size_char: int = 25,
+            self,
+            path_to_char_dict: str = None,
+            char_embedding_dim: int = 25,
+            hidden_size_char: int = 25,
     ):
         """Uses the default character dictionary if none provided."""
 
@@ -283,7 +282,7 @@ class CharacterEmbeddings(TokenEmbeddings):
 
         self.__embedding_length = self.hidden_size_char * 2
 
-        self.to(flair.device)
+        self.to(self.device)
 
     @property
     def embedding_length(self) -> int:
@@ -317,12 +316,12 @@ class CharacterEmbeddings(TokenEmbeddings):
             tokens_mask = torch.zeros(
                 (len(tokens_sorted_by_length), longest_token_in_sentence),
                 dtype=torch.long,
-                device=flair.device,
+                device=self.device,
             )
 
             for i, c in enumerate(tokens_sorted_by_length):
                 tokens_mask[i, : chars2_length[i]] = torch.tensor(
-                    c, dtype=torch.long, device=flair.device
+                    c, dtype=torch.long, device=self.device
                 )
 
             # chars for rnn processing
@@ -341,7 +340,7 @@ class CharacterEmbeddings(TokenEmbeddings):
             chars_embeds_temp = torch.zeros(
                 (outputs.size(0), outputs.size(2)),
                 dtype=torch.float,
-                device=flair.device,
+                device=self.device,
             )
             for i, index in enumerate(output_lengths):
                 chars_embeds_temp[i] = outputs[i, index - 1]
@@ -659,11 +658,11 @@ class FlairEmbeddings(TokenEmbeddings):
 
 class PooledFlairEmbeddings(TokenEmbeddings):
     def __init__(
-        self,
-        contextual_embeddings: Union[str, FlairEmbeddings],
-        pooling: str = "min",
-        only_capitalized: bool = False,
-        **kwargs,
+            self,
+            contextual_embeddings: Union[str, FlairEmbeddings],
+            pooling: str = "min",
+            only_capitalized: bool = False,
+            **kwargs,
     ):
 
         super().__init__()
@@ -760,22 +759,23 @@ class PooledFlairEmbeddings(TokenEmbeddings):
     def __setstate__(self, d):
         self.__dict__ = d
 
-        if flair.device != 'cpu':
+        if self.device != 'cpu':
             for key in self.word_embeddings:
                 self.word_embeddings[key] = self.word_embeddings[key].cpu()
 
 
 class TransformerWordEmbeddings(TokenEmbeddings):
     def __init__(
-        self,
-        model: str = "bert-base-uncased",
-        layers: str = "-1,-2,-3,-4",
-        pooling_operation: str = "first",
-        batch_size: int = 1,
-        use_scalar_mix: bool = False,
-        fine_tune: bool = False,
-        allow_long_sentences: bool = True,
-        **kwargs
+            self,
+            model: str = "bert-base-uncased",
+            layers: str = "-1,-2,-3,-4",
+            pooling_operation: str = "first",
+            batch_size: int = 1,
+            use_scalar_mix: bool = False,
+            fine_tune: bool = False,
+            allow_long_sentences: bool = True,
+            device=torch.device("cpu"),
+            **kwargs
     ):
         """
         Bidirectional transformer embeddings of words from various transformer architectures.
@@ -805,7 +805,7 @@ class TransformerWordEmbeddings(TokenEmbeddings):
 
         if allow_long_sentences:
             self.max_subtokens_sequence_length = self.tokenizer.model_max_length
-            self.stride = self.tokenizer.model_max_length//2
+            self.stride = self.tokenizer.model_max_length // 2
         else:
             self.max_subtokens_sequence_length = self.tokenizer.model_max_length
             self.stride = 0
@@ -815,12 +815,13 @@ class TransformerWordEmbeddings(TokenEmbeddings):
 
         # when initializing, embeddings are in eval mode by default
         self.model.eval()
-        self.model.to(flair.device)
+        self.device = device
+        self.model.to(self.device)
 
         # embedding parameters
         if layers == 'all':
             # send mini-token through to check how many layers the model has
-            hidden_states = self.model(torch.tensor([1], device=flair.device).unsqueeze(0))[-1]
+            hidden_states = self.model(torch.tensor([1], device=self.device).unsqueeze(0))[-1]
             self.layer_indexes = [int(x) for x in range(len(hidden_states))]
         else:
             self.layer_indexes = [int(x) for x in layers.split(",")]
@@ -955,12 +956,12 @@ class TransformerWordEmbeddings(TokenEmbeddings):
         input_ids = torch.zeros(
             [total_sentence_parts, longest_sequence_in_batch],
             dtype=torch.long,
-            device=flair.device,
+            device=self.device,
         )
         mask = torch.zeros(
             [total_sentence_parts, longest_sequence_in_batch],
             dtype=torch.long,
-            device=flair.device,
+            device=self.device,
         )
         for s_id, sentence in enumerate(subtokenized_sentences):
             sequence_length = len(sentence)
@@ -980,7 +981,8 @@ class TransformerWordEmbeddings(TokenEmbeddings):
         with gradient_context:
 
             # iterate over all subtokenized sentences
-            for sentence_idx, (sentence, subtoken_lengths, nr_sentence_parts) in enumerate(zip(sentences, subtokenized_sentences_token_lengths, sentence_parts_lengths)):
+            for sentence_idx, (sentence, subtoken_lengths, nr_sentence_parts) in enumerate(
+                    zip(sentences, subtokenized_sentences_token_lengths, sentence_parts_lengths)):
 
                 sentence_hidden_state = hidden_states[:, sentence_idx + sentence_idx_offset, ...]
 
@@ -990,8 +992,8 @@ class TransformerWordEmbeddings(TokenEmbeddings):
                     # remove stride_size//2 at end of sentence_hidden_state, and half at beginning of remainder,
                     # in order to get some context into the embeddings of these words.
                     # also don't include the embedding of the extra [CLS] and [SEP] tokens.
-                    sentence_hidden_state = torch.cat((sentence_hidden_state[:, :-1-self.stride//2, :],
-                                                       remainder_sentence_hidden_state[:, 1 + self.stride//2:, :]), 1)
+                    sentence_hidden_state = torch.cat((sentence_hidden_state[:, :-1 - self.stride // 2, :],
+                                                       remainder_sentence_hidden_state[:, 1 + self.stride // 2:, :]), 1)
 
                 subword_start_idx = self.begin_offset
 
@@ -1139,7 +1141,7 @@ class TransformerWordEmbeddings(TokenEmbeddings):
 class FastTextEmbeddings(TokenEmbeddings):
     """FastText Embeddings with oov functionality"""
 
-    def __init__(self, embeddings: str, use_local: bool = True, field: str = None):
+    def __init__(self, embeddings: str, use_local: bool = True, field: str = None, device=torch.device("cpu")):
         """
         Initializes fasttext word embeddings. Constructor downloads required embedding file and stores in cache
         if use_local is False.
@@ -1171,7 +1173,7 @@ class FastTextEmbeddings(TokenEmbeddings):
         self.__embedding_length: int = self.precomputed_word_embeddings.vector_size
 
         self.field = field
-        super().__init__()
+        super().__init__(device=device)
 
     @property
     def embedding_length(self) -> int:
@@ -1185,7 +1187,7 @@ class FastTextEmbeddings(TokenEmbeddings):
             word_embedding = np.zeros(self.embedding_length, dtype="float")
 
         word_embedding = torch.tensor(
-            word_embedding.tolist(), device=flair.device, dtype=torch.float
+            word_embedding.tolist(), device=self.device, dtype=torch.float
         )
         return word_embedding
 
@@ -1217,11 +1219,12 @@ class OneHotEmbeddings(TokenEmbeddings):
     """One-hot encoded embeddings. """
 
     def __init__(
-        self,
-        corpus: Corpus,
-        field: str = "text",
-        embedding_length: int = 300,
-        min_freq: int = 3,
+            self,
+            corpus: Corpus,
+            field: str = "text",
+            embedding_length: int = 300,
+            min_freq: int = 3,
+            device=torch.device("cpu")
     ):
         """
         Initializes one-hot encoded word embeddings and a trainable embedding layer
@@ -1230,7 +1233,7 @@ class OneHotEmbeddings(TokenEmbeddings):
         :param embedding_length: dimensionality of the trainable embedding layer
         :param min_freq: minimum frequency of a word to become part of the vocabulary
         """
-        super().__init__()
+        super().__init__(device)
         self.name = "one-hot"
         self.static_embeddings = False
         self.min_freq = min_freq
@@ -1268,7 +1271,7 @@ class OneHotEmbeddings(TokenEmbeddings):
         )
         torch.nn.init.xavier_uniform_(self.embedding_layer.weight)
 
-        self.to(flair.device)
+        self.to(self.device)
 
     @property
     def embedding_length(self) -> int:
@@ -1293,7 +1296,7 @@ class OneHotEmbeddings(TokenEmbeddings):
             one_hot_sentences.extend(context_idxs)
 
         one_hot_sentences = torch.tensor(one_hot_sentences, dtype=torch.long).to(
-            flair.device
+            self.device
         )
 
         embedded = self.embedding_layer.forward(one_hot_sentences)
@@ -1318,10 +1321,10 @@ class HashEmbeddings(TokenEmbeddings):
     """Standard embeddings with Hashing Trick."""
 
     def __init__(
-        self, num_embeddings: int = 1000, embedding_length: int = 300, hash_method="md5"
+            self, num_embeddings: int = 1000, embedding_length: int = 300, hash_method="md5", device=torch.device("cpu")
     ):
 
-        super().__init__()
+        super().__init__(device)
         self.name = "hash"
         self.static_embeddings = False
 
@@ -1336,7 +1339,7 @@ class HashEmbeddings(TokenEmbeddings):
         )
         torch.nn.init.xavier_uniform_(self.embedding_layer.weight)
 
-        self.to(flair.device)
+        self.to(self.device)
 
     @property
     def num_embeddings(self) -> int:
@@ -1358,7 +1361,7 @@ class HashEmbeddings(TokenEmbeddings):
 
             hash_sentences.extend(context_idxs)
 
-        hash_sentences = torch.tensor(hash_sentences, dtype=torch.long).to(flair.device)
+        hash_sentences = torch.tensor(hash_sentences, dtype=torch.long).to(self.device)
 
         embedded = self.embedding_layer.forward(hash_sentences)
 
@@ -1376,7 +1379,7 @@ class HashEmbeddings(TokenEmbeddings):
 
 
 class MuseCrosslingualEmbeddings(TokenEmbeddings):
-    def __init__(self,):
+    def __init__(self, ):
         self.name: str = f"muse-crosslingual"
         self.static_embeddings = True
         self.__embedding_length: int = 300
@@ -1397,7 +1400,7 @@ class MuseCrosslingualEmbeddings(TokenEmbeddings):
         else:
             word_embedding = np.zeros(self.embedding_length, dtype="float")
         word_embedding = torch.tensor(
-            word_embedding, device=flair.device, dtype=torch.float
+            word_embedding, device=self.device, dtype=torch.float
         )
         return word_embedding
 
@@ -1509,14 +1512,14 @@ class BPEmbSerializable(BPEmb):
 
 class BytePairEmbeddings(TokenEmbeddings):
     def __init__(
-        self,
-        language: str = None,
-        dim: int = 50,
-        syllables: int = 100000,
-        cache_dir= None,
-        model_file_path: Path = None,
-        embedding_file_path: Path = None,
-        **kwargs,
+            self,
+            language: str = None,
+            dim: int = 50,
+            syllables: int = 100000,
+            cache_dir=None,
+            model_file_path: Path = None,
+            embedding_file_path: Path = None,
+            **kwargs,
     ):
         """
         Initializes BP embeddings. Constructor downloads required files if not there.
@@ -1527,9 +1530,9 @@ class BytePairEmbeddings(TokenEmbeddings):
             self.name: str = f"bpe-{language}-{syllables}-{dim}"
         else:
             assert (
-                model_file_path is not None and embedding_file_path is not None
+                    model_file_path is not None and embedding_file_path is not None
             ), "Need to specify model_file_path and embedding_file_path if no language is given in BytePairEmbeddings(...)"
-            dim=None
+            dim = None
 
         self.embedder = BPEmbSerializable(
             lang=language,
@@ -1593,7 +1596,8 @@ class ELMoEmbeddings(TokenEmbeddings):
     Default is to concatene the top 3 layers in the LM."""
 
     def __init__(
-        self, model: str = "original", options_file: str = None, weight_file: str = None, embedding_mode: str = "all"
+            self, model: str = "original", options_file: str = None, weight_file: str = None,
+            embedding_mode: str = "all"
     ):
         super().__init__()
 
@@ -1633,15 +1637,15 @@ class ELMoEmbeddings(TokenEmbeddings):
             if model == "pubmed":
                 options_file = "https://s3-us-west-2.amazonaws.com/allennlp/models/elmo/contributed/pubmed/elmo_2x4096_512_2048cnn_2xhighway_options.json"
                 weight_file = "https://s3-us-west-2.amazonaws.com/allennlp/models/elmo/contributed/pubmed/elmo_2x4096_512_2048cnn_2xhighway_weights_PubMed_only.hdf5"
-        
+
         if embedding_mode == "all":
             self.embedding_mode_fn = self.use_layers_all
         elif embedding_mode == "top":
-            self.embedding_mode_fn = self.use_layers_top 
+            self.embedding_mode_fn = self.use_layers_top
         elif embedding_mode == "average":
-            self.embedding_mode_fn = self.use_layers_average   
-                    
-        # put on Cuda if available
+            self.embedding_mode_fn = self.use_layers_average
+
+            # put on Cuda if available
         from flair import device
 
         if re.fullmatch(r"cuda:[0-9]+", str(device)):
@@ -1666,21 +1670,21 @@ class ELMoEmbeddings(TokenEmbeddings):
     @property
     def embedding_length(self) -> int:
         return self.__embedding_length
-    
-    def use_layers_all(self,x):
+
+    def use_layers_all(self, x):
         return torch.cat(x, 0)
-    
-    def use_layers_top(self,x):
+
+    def use_layers_top(self, x):
         return x[-1]
-    
-    def use_layers_average(self,x):
+
+    def use_layers_average(self, x):
         return torch.mean(torch.stack(x), 0)
-        
+
     def _add_embeddings_internal(self, sentences: List[Sentence]) -> List[Sentence]:
         # ELMoEmbeddings before Release 0.5 did not set self.embedding_mode_fn
         if not getattr(self, "embedding_mode_fn", None):
             self.embedding_mode_fn = self.use_layers_all
-            
+
         sentence_words: List[List[str]] = []
         for sentence in sentences:
             sentence_words.append([token.text for token in sentence])
@@ -1711,18 +1715,18 @@ class ELMoEmbeddings(TokenEmbeddings):
     def __setstate__(self, state):
         self.__dict__ = state
 
-        if re.fullmatch(r"cuda:[0-9]+", str(flair.device)):
-            cuda_device = int(str(flair.device).split(":")[-1])
-        elif str(flair.device) == "cpu":
+        if re.fullmatch(r"cuda:[0-9]+", str(self.device)):
+            cuda_device = int(str(self.device).split(":")[-1])
+        elif str(self.device) == "cpu":
             cuda_device = -1
         else:
             cuda_device = 0
 
         self.ee.cuda_device = cuda_device
 
-        self.ee.elmo_bilm.to(device=flair.device)
+        self.ee.elmo_bilm.to(device=self.device)
         self.ee.elmo_bilm._elmo_lstm._states = tuple(
-            [state.to(flair.device) for state in self.ee.elmo_bilm._elmo_lstm._states])
+            [state.to(self.device) for state in self.ee.elmo_bilm._elmo_lstm._states])
 
 
 class NILCEmbeddings(WordEmbeddings):

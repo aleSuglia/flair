@@ -1,6 +1,5 @@
 import logging
 import sys
-
 from pathlib import Path
 from typing import List, Union, Optional, Dict
 from warnings import warn
@@ -17,7 +16,7 @@ from tqdm import tqdm
 import flair.nn
 from flair.data import Dictionary, Sentence, Label
 from flair.datasets import SentenceDataset, DataLoader
-from flair.embeddings import TokenEmbeddings, StackedEmbeddings, Embeddings
+from flair.embeddings import TokenEmbeddings, StackedEmbeddings
 from flair.file_utils import cached_path, unzip_file
 from flair.training_utils import Metric, Result, store_embeddings
 
@@ -55,9 +54,10 @@ def log_sum_exp_batch(vecs):
 
 
 def pad_tensors(tensor_list):
+    device = tensor_list[0].device
     ml = max([x.shape[0] for x in tensor_list])
     shape = [len(tensor_list), ml] + list(tensor_list[0].shape[1:])
-    template = torch.zeros(*shape, dtype=torch.long, device=flair.device)
+    template = torch.zeros(*shape, dtype=torch.long, device=device)
     lens_ = [x.shape[0] for x in tensor_list]
     for i, tensor in enumerate(tensor_list):
         template[i, : lens_[i]] = tensor
@@ -84,6 +84,7 @@ class SequenceTagger(flair.nn.Model):
             pickle_module: str = "pickle",
             beta: float = 1.0,
             loss_weights: Dict[str, float] = None,
+            device: torch.device = torch.device("cpu")
     ):
         """
         Initializes a SequenceTagger
@@ -107,6 +108,7 @@ class SequenceTagger(flair.nn.Model):
         """
 
         super(SequenceTagger, self).__init__()
+        self.model_device = device
         self.use_rnn = use_rnn
         self.hidden_size = hidden_size
         self.use_crf: bool = use_crf
@@ -136,7 +138,7 @@ class SequenceTagger(flair.nn.Model):
             for i, tag in enumerate(self.tag_dictionary.get_items()):
                 if tag in loss_weights.keys():
                     weight_list[i] = loss_weights[tag]
-            self.loss_weights = torch.FloatTensor(weight_list).to(flair.device)
+            self.loss_weights = torch.tensor(weight_list).to(self.device)
         else:
             self.loss_weights = None
 
@@ -195,12 +197,12 @@ class SequenceTagger(flair.nn.Model):
 
                     self.lstm_init_h = Parameter(
                         torch.randn(self.nlayers * num_directions, self.hidden_size),
-                        requires_grad=True,
+                        requires_grad=True
                     )
 
                     self.lstm_init_c = Parameter(
                         torch.randn(self.nlayers * num_directions, self.hidden_size),
-                        requires_grad=True,
+                        requires_grad=True
                     )
 
                     # TODO: Decide how to initialize the hidden state variables
@@ -229,7 +231,11 @@ class SequenceTagger(flair.nn.Model):
             :, self.tag_dictionary.get_idx_for_item(STOP_TAG)
             ] = -10000
 
-        self.to(flair.device)
+        self.to(self.device)
+
+    @property
+    def device(self):
+        return self.model_device
 
     def _get_state_dict(self):
         model_state = {
@@ -388,7 +394,7 @@ class SequenceTagger(flair.nn.Model):
                         token.add_tags_proba_dist(label_name, token_all_tags)
 
                 # clearing token embeddings to save memory
-                store_embeddings(batch, storage_mode=embedding_storage_mode)
+                store_embeddings(batch, storage_mode=embedding_storage_mode, device=self.device)
 
             if return_loss:
                 return overall_loss / batch_no
@@ -615,7 +621,7 @@ class SequenceTagger(flair.nn.Model):
         pre_allocated_zero_tensor = torch.zeros(
             self.embeddings.embedding_length * longest_token_sequence_in_batch,
             dtype=torch.float,
-            device=flair.device,
+            device=self.device,
         )
 
         all_embs = list()
@@ -686,12 +692,12 @@ class SequenceTagger(flair.nn.Model):
     def _score_sentence(self, feats, tags, lens_):
 
         start = torch.tensor(
-            [self.tag_dictionary.get_idx_for_item(START_TAG)], device=flair.device
+            [self.tag_dictionary.get_idx_for_item(START_TAG)], device=self.device
         )
         start = start[None, :].repeat(tags.shape[0], 1)
 
         stop = torch.tensor(
-            [self.tag_dictionary.get_idx_for_item(STOP_TAG)], device=flair.device
+            [self.tag_dictionary.get_idx_for_item(STOP_TAG)], device=self.device
         )
         stop = stop[None, :].repeat(tags.shape[0], 1)
 
@@ -703,10 +709,10 @@ class SequenceTagger(flair.nn.Model):
                 STOP_TAG
             )
 
-        score = torch.FloatTensor(feats.shape[0]).to(flair.device)
+        score = torch.tensor(feats.shape[0]).to(self.device)
 
         for i in range(feats.shape[0]):
-            r = torch.LongTensor(range(lens_[i])).to(flair.device)
+            r = torch.tensor(range(lens_[i])).to(self.device)
 
             score[i] = torch.sum(
                 self.transitions[
@@ -718,7 +724,7 @@ class SequenceTagger(flair.nn.Model):
 
     def _calculate_loss(
             self, features: torch.tensor, sentences: List[Sentence]
-    ) -> float:
+    ) -> torch.tensor:
 
         lengths: List[int] = [len(sentence.tokens) for sentence in sentences]
 
@@ -730,7 +736,7 @@ class SequenceTagger(flair.nn.Model):
                 for token in sentence
             ]
             # add tags as tensor
-            tag = torch.tensor(tag_idx, device=flair.device)
+            tag = torch.tensor(tag_idx, device=self.device)
             tag_list.append(tag)
 
         if self.use_crf:
@@ -906,7 +912,7 @@ class SequenceTagger(flair.nn.Model):
             feats.shape[1] + 1,
             feats.shape[2],
             dtype=torch.float,
-            device=flair.device,
+            device=self.device,
         )
 
         forward_var[:, 0, :] = init_alphas[None, :].repeat(feats.shape[0], 1)

@@ -1,20 +1,18 @@
-import torch, flair
 import logging
 import re
-
 from abc import abstractmethod, ABC
-
 from collections import Counter
 from collections import defaultdict
-
-from deprecated import deprecated
-from flair.file_utils import Tqdm
 from operator import itemgetter
+from typing import List, Dict, Union, Callable, Optional
 
+import torch
+from deprecated import deprecated
 from torch.utils.data import Dataset
 from torch.utils.data.dataset import ConcatDataset, Subset
 
-from typing import List, Dict, Union, Callable, Optional
+import flair
+from flair.file_utils import Tqdm
 
 log = logging.getLogger("flair")
 
@@ -291,6 +289,10 @@ class Token(DataPoint):
         self._embeddings: Dict = {}
         self.tags_proba_dist: Dict[str, List[Label]] = {}
 
+    @property
+    def device(self):
+        return next(iter(self._embeddings.values())).device
+
     def add_tag_label(self, tag_type: str, tag: Label):
         self.set_label(tag_type, tag.value, tag.score)
 
@@ -313,11 +315,6 @@ class Token(DataPoint):
         return self.sentence.get_token(self.head_id)
 
     def set_embedding(self, name: str, vector: torch.tensor):
-        device = flair.device
-        if (flair.embedding_storage_mode == "cpu") and len(self._embeddings.keys()) > 0:
-            device = next(iter(self._embeddings.values())).device
-        if device != vector.device:
-            vector = vector.to(device)
         self._embeddings[name] = vector
 
     def to(self, device: str, pin_memory: bool = False):
@@ -342,9 +339,9 @@ class Token(DataPoint):
         embeddings = []
         for embed in sorted(self._embeddings.keys()):
             if embedding_names and embed not in embedding_names: continue
-            embed = self._embeddings[embed].to(flair.device)
-            if (flair.embedding_storage_mode == "cpu") and embed.device != flair.device:
-                embed = embed.to(flair.device)
+            embed = self._embeddings[embed].to(self.device)
+            # if (flair.embedding_storage_mode == "cpu") and embed.device != flair.device:
+            #    embed = embed.to(flair.device)
             embeddings.append(embed)
         return embeddings
 
@@ -352,9 +349,9 @@ class Token(DataPoint):
         embeddings = self.get_each_embedding(names)
 
         if embeddings:
-            return torch.cat(embeddings, dim=0)
+            return torch.cat(embeddings, dim=0).to(self.device)
 
-        return torch.tensor([], device=flair.device)
+        return torch.empty(0)
 
     @property
     def start_position(self) -> int:
@@ -524,11 +521,11 @@ class Sentence(DataPoint):
     """
 
     def __init__(
-        self,
-        text: str = None,
-        use_tokenizer: Union[bool, Tokenizer] = True,
-        language_code: str = None,
-        start_position: int = None
+            self,
+            text: str = None,
+            use_tokenizer: Union[bool, Tokenizer] = True,
+            language_code: str = None,
+            start_position: int = None
     ):
         """
         Class to hold all meta related to a text (tokens, predictions, language code, ...)
@@ -706,9 +703,11 @@ class Sentence(DataPoint):
         return self.get_embedding()
 
     def set_embedding(self, name: str, vector: torch.tensor):
-        device = flair.device
         if (flair.embedding_storage_mode == "cpu") and len(self._embeddings.keys()) > 0:
             device = next(iter(self._embeddings.values())).device
+        else:
+            device = vector.device
+
         if device != vector.device:
             vector = vector.to(device)
         self._embeddings[name] = vector
@@ -1094,7 +1093,6 @@ class Corpus:
 
         return subset
 
-
     @staticmethod
     def _filter_empty_sentences(dataset) -> Dataset:
 
@@ -1361,8 +1359,8 @@ def iob_iobes(tags):
             raise Exception("Invalid IOB format!")
     return new_tags
 
-def randomly_split_into_two_datasets(dataset, length_of_first):
 
+def randomly_split_into_two_datasets(dataset, length_of_first):
     import random
     indices = [i for i in range(len(dataset))]
     random.shuffle(indices)

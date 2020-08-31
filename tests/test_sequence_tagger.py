@@ -292,9 +292,10 @@ def test_train_resume_tagger(results_base_path, tasks_base_path):
 
     trainer = ModelTrainer(model, corpus)
     trainer.train(results_base_path, max_epochs=2, shuffle=False, checkpoint=True)
+    device = model.device
 
     del trainer, model
-    trainer = ModelTrainer.load_checkpoint(results_base_path / "checkpoint.pt", corpus)
+    trainer = ModelTrainer.load_checkpoint(results_base_path / "checkpoint.pt", corpus, device)
 
     trainer.train(results_base_path, max_epochs=2, shuffle=False, checkpoint=True)
 

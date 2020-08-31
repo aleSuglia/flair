@@ -1,11 +1,11 @@
 import copy
-import logging
-from pathlib import Path
-from typing import List, Union
-import time
 import datetime
-import sys
 import inspect
+import logging
+import sys
+import time
+from pathlib import Path
+from typing import Union
 
 import torch
 from torch.optim.sgd import SGD
@@ -50,6 +50,7 @@ class ModelTrainer:
         Initialize a model trainer
         :param model: The model that you want to train. The model should inherit from flair.nn.Model
         :param corpus: The dataset used to train the model, should be of type Corpus
+        :param device: The device used to run the training (model parameters and tensors will be moved to it)
         :param optimizer: The optimizer to use (typically SGD or Adam)
         :param epoch: The starting epoch (normally 0 but could be higher if you continue training model)
         :param use_tensorboard: If True, writes out tensorboard information
@@ -59,6 +60,7 @@ class ModelTrainer:
         self.optimizer: torch.optim.Optimizer = optimizer
         self.epoch: int = epoch
         self.use_tensorboard: bool = use_tensorboard
+        self.device = self.model.device
 
     def train(
         self,
@@ -181,7 +183,7 @@ class ModelTrainer:
         log_line(log)
         log.info(f'Model training base path: "{base_path}"')
         log_line(log)
-        log.info(f"Device: {flair.device}")
+        log.info(f"Device: {self.device}")
         log_line(log)
         log.info(f"Embeddings storage mode: {embeddings_storage_mode}")
         if isinstance(self.model, SequenceTagger) and self.model.weight_dict and self.model.use_crf:
@@ -394,7 +396,7 @@ class ModelTrainer:
                     train_loss += loss.item()
 
                     # depending on memory mode, embeddings are moved to CPU, GPU or deleted
-                    store_embeddings(batch, embeddings_storage_mode)
+                    store_embeddings(batch, embeddings_storage_mode, self.device)
 
                     batch_time += time.time() - start_time
                     if seen_batches % modulo == 0:
@@ -439,7 +441,7 @@ class ModelTrainer:
                     result_line += f"\t{train_eval_result.log_line}"
 
                     # depending on memory mode, embeddings are moved to CPU, GPU or deleted
-                    store_embeddings(self.corpus.train, embeddings_storage_mode)
+                    store_embeddings(self.corpus.train, embeddings_storage_mode, self.device)
 
                 if log_train_part:
                     train_part_eval_result, train_part_loss = self.model.evaluate(
@@ -474,7 +476,7 @@ class ModelTrainer:
                     current_score = dev_eval_result.main_score
 
                     # depending on memory mode, embeddings are moved to CPU, GPU or deleted
-                    store_embeddings(self.corpus.dev, embeddings_storage_mode)
+                    store_embeddings(self.corpus.dev, embeddings_storage_mode, self.device)
 
                     if self.use_tensorboard:
                         writer.add_scalar("dev_loss", dev_loss, self.epoch)
@@ -496,7 +498,7 @@ class ModelTrainer:
                     )
 
                     # depending on memory mode, embeddings are moved to CPU, GPU or deleted
-                    store_embeddings(self.corpus.test, embeddings_storage_mode)
+                    store_embeddings(self.corpus.test, embeddings_storage_mode, self.device)
 
                     if self.use_tensorboard:
                         writer.add_scalar("test_loss", test_loss, self.epoch)
@@ -630,8 +632,8 @@ class ModelTrainer:
         self.corpus = corpus
 
     @classmethod
-    def load_checkpoint(cls, checkpoint: Union[Path, str], corpus: Corpus):
-        model: ModelTrainer = torch.load(checkpoint, map_location=flair.device)
+    def load_checkpoint(cls, checkpoint: Union[Path, str], corpus: Corpus, device):
+        model: ModelTrainer = torch.load(checkpoint, map_location=device)
         model.corpus = corpus
         return model
 
@@ -764,7 +766,7 @@ class ModelTrainer:
                     )
 
             self.model.load_state_dict(model_state)
-            self.model.to(flair.device)
+            self.model.to(self.device)
 
         log_line(log)
         log.info(f"learning rate finder finished - plot {learning_rate_tsv}")
