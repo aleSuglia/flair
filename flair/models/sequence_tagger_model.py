@@ -311,6 +311,7 @@ class SequenceTagger(flair.nn.Model):
             label_name: Optional[str] = None,
             return_loss=False,
             embedding_storage_mode="none",
+            num_workers=0
     ):
         """
         Predict sequence tags for Named Entity Recognition task
@@ -346,7 +347,9 @@ class SequenceTagger(flair.nn.Model):
             ]
 
             dataloader = DataLoader(
-                dataset=SentenceDataset(reordered_sentences), batch_size=mini_batch_size
+                dataset=SentenceDataset(reordered_sentences),
+                batch_size=mini_batch_size,
+                num_workers=num_workers
             )
 
             if self.use_crf:
